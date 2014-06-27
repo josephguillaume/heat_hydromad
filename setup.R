@@ -9,7 +9,7 @@ modspec <- hydromad(x, sma = "cwi", routing = "expuh",
                  tau_s = c(2,100), v_s = c(0,1))
 
 ## now try to fit it
-modfit <- fitByOptim(modx)
+modfit <- fitByOptim(modspec)
 
 ## Define the quantity of interest that will be used in HEAT
 ## In this case NSE*
