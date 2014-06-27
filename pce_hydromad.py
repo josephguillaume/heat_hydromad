@@ -215,7 +215,7 @@ def get_pce_error_calib(pce,model, pts_filename, vals_filename):
     vals = numpy.loadtxt( vals_filename, delimiter = ',' )
     vals = vals.reshape( vals.shape[0], 1 )
     rv_trans = define_random_variable_transformation_hydromad(model)
-    return(numpy.linalg.norm( vals.squeeze() - pce.evaluate_set( pts ).squeeze() )  / numpy.sqrt( test_vals.shape[0] ))
+    return(numpy.linalg.norm( vals.squeeze() - pce.evaluate_set( pts ).squeeze() )  / numpy.sqrt( vals.shape[0] ))
 
 
 ########################################################
