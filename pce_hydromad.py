@@ -9,12 +9,13 @@ from utilities.generalised_sparse_grid_tools import get_quadrature_rule_1d,\
     convert_homogeneous_sparse_grid_to_pce, build_generalised_sparse_grid,\
     HierarchicalSurplusDimensionRefinementManager
 
+from math_tools_cpp import latin_hypercube_design
 
 def get_sensitivities( pce, qoi = 0 ):
     main_effects = numpy.zeros( ( pce.dimension() ), numpy.double )
     total_effects = numpy.zeros( ( pce.dimension() ), numpy.double )
     interaction_effects = numpy.zeros( ( pce.dimension()+1 ), numpy.double )
-    var = pce.variance()
+    var = pce.variance()[0]
     indices = PolyIndexVector()
     pce.get_basis_indices( indices )
     coeff = pce.get_coefficients()[:,qoi]
@@ -22,7 +23,7 @@ def get_sensitivities( pce, qoi = 0 ):
         # calculate contibution to variance of the index
         var_contribution = \
             coeff[index.get_array_index()]**2*pce.l2_norm( index )
-        # get number of dimensions involved in interaction, also known 
+        # get number of dimensions involved in interaction, also known
         # as order
         order = index.num_effect_dims()
         # update interaction effects
@@ -71,6 +72,8 @@ def get_interactions( pce, qoi = 0 ):
     for i in xrange( len( I ) ):
         values_tmp[i] = interaction_values[I[i]]
         terms_tmp.append( interaction_terms[I[i]] )
+    assert numpy.allclose( numpy.sum( values_tmp ), pce.variance() )
+    values_tmp /= pce.variance()[0]
     return values_tmp[::-1], terms_tmp[::-1]
 
 def get_interaction_values(pce):
@@ -83,19 +86,44 @@ def get_interaction_values(pce):
             l += 'z_{%d},' %(interaction_terms[i][j]+1)
         l+= 'z_{%d}$)' %(interaction_terms[i][-1]+1)
         labels.append( l )
-    #interaction_values = interaction_values[:i+1]
     assert interaction_values.shape[0] == len ( labels )
     return(numpy.transpose(numpy.asarray([labels,interaction_values])))
 
+##############################################################
+
 def construct_data(model,num_pts,seed=None):
+    """Sample num_pts parameter sets for model by simple random sampling
+    Writes files pts.txt and vals.txt
+    model should be a hydromad model, as define_random_variable_transformation_hydromad is then called.
+    seed is passed to numpy.random.RandomState
+    """
     num_dims = model.num_dims
     rv_trans = define_random_variable_transformation_hydromad(model)
     rng = numpy.random.RandomState( seed )
     pts = rng.uniform( -1., 1., ( num_dims, num_pts ) )
     pts = rv_trans.map_from_canonical_distributions( pts )
-    vals = model.evaluate_set( pts )                  
+    vals = model.evaluate_set( pts )
     numpy.savetxt( 'pts.txt', pts, delimiter = ',' )
     numpy.savetxt( 'vals.txt', vals, delimiter = ',' )
+
+## Adapted from Mun-Ju Shin, 1.7.2014   
+def construct_data_LHS(model,num_pts,seed=None):
+    """Sample num_pts parameter sets for model by Latin Hypercube sampling
+    Writes files pts.txt and vals.txt
+    model should be a hydromad model, as define_random_variable_transformation_hydromad is then called.
+    seed is passed to std::srand, such that a seed of 1 has special meaning and should not be used
+    """
+    num_dims = model.num_dims
+    rv_trans = define_random_variable_transformation_hydromad(model)
+    pts = latin_hypercube_design( num_pts, num_dims, seed )
+    # returns points on [0,1] but need pts on [-1,1]
+    pts = 2*pts-1.
+    pts = rv_trans.map_from_canonical_distributions( pts )
+    vals = model.evaluate_set( pts )
+    numpy.savetxt( 'pts.txt', pts, delimiter = ',' )
+    numpy.savetxt( 'vals.txt', vals, delimiter = ',' )
+
+##############################################################
 
 def build_pce_regression( pts_filename, vals_filename, rv_trans ):
     # Must be a ( num_dims x num_pts ) matrix
@@ -132,7 +160,8 @@ def build_pce_regression( pts_filename, vals_filename, rv_trans ):
 
     return pce
 
-def build_pce_sparse_grid(rv_trans, max_num_points , model):
+
+def build_pce_sparse_grid(rv_trans, max_num_points, model):
     quad_type = 'clenshaw-curtis'
     quadrature_rule_1d, orthog_poly_1d = get_quadrature_rule_1d( quad_type )
     rm = None
@@ -140,19 +169,21 @@ def build_pce_sparse_grid(rv_trans, max_num_points , model):
     max_level_1d = numpy.iinfo( numpy.int32 ).max
     sg = build_generalised_sparse_grid( quadrature_rule_1d, orthog_poly_1d,
                                         rv_trans, model, max_num_points,
-                                        tpqr = None, rm = rm, tolerance = 0., 
-                                        max_level = max_level, 
+                                        tpqr = None, rm = rm, tolerance = 0.,
+                                        max_level = max_level,
                                         max_level_1d = max_level_1d,
                                         verbosity = 0,
-                                        test_pts = None, 
-                                        test_vals = None, 
+                                        test_pts = None,
+                                        test_vals = None,
                                         breaks = None )[0]
 
     pce = PolynomialChaosExpansion()
     pce.set_random_variable_transformation( rv_trans )
     sg.convert_to_polynomial_chaos_expansion( pce, 0 )
-    
+
     return pce
+
+##############################################################
 
 from utilities.visualisation import *
 def plot_sensitivities( pce ):
@@ -198,6 +229,7 @@ def define_random_variable_transformation_hydromad(model):
     rv_trans.set_random_variables( dist_types, ranges, means, std_devs )
     return rv_trans
 
+########################################################
 
 def get_pce_error(pce,model,num_pts=10000,seed=None):
     num_dims=model.nominal_z.shape[0]
@@ -217,6 +249,21 @@ def get_pce_error_calib(pce,model, pts_filename, vals_filename):
     rv_trans = define_random_variable_transformation_hydromad(model)
     return(numpy.linalg.norm( vals.squeeze() - pce.evaluate_set( pts ).squeeze() )  / numpy.sqrt( vals.shape[0] ))
 
+## Adapted from Mun-Ju Shin, 1.7.2014
+def get_pce_error_LHS(pce,model,num_pts=10000,seed=None):
+    """Evaluate RMSE of pce relative to model using a new set of num_pts parameter sets obtained by Latin Hypercube sampling
+    model should be a hydromad model, as define_random_variable_transformation_hydromad is then called.
+    seed is passed to std::srand, such that a seed of 1 has special meaning and should not be used
+    """
+    num_dims=model.nominal_z.shape[0]
+    rv_trans = define_random_variable_transformation_hydromad(model)
+    test_pts = latin_hypercube_design( num_pts, num_dims, seed )
+    # returns points on [0,1] but need pts on [-1,1]
+    test_pts = 2*test_pts-1.
+    test_pts = rv_trans.map_from_canonical_distributions( test_pts )
+    print "evaluating %d points" % num_pts
+    test_vals = numpy.asarray(model.evaluate_set( test_pts ))
+    return(numpy.linalg.norm( test_vals.squeeze() - pce.evaluate_set( test_pts ).squeeze() )  / numpy.sqrt( test_vals.shape[0] ))
 
 ########################################################
 ## Calculate bootstrap estimates
@@ -287,6 +334,7 @@ def bootstrap_pce_regression(pts_filename, vals_filename,rv_trans,alpha=0.05,n_s
     TSIs=bootstrap.ci((pts.transpose(),vals),bootstrappable_pce_regression,alpha=alpha,n_samples=n_samples,multi=True)
 
     return TSIs
+
 
 if __name__ == "__main__":
     pass
